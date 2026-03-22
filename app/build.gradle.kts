@@ -31,7 +31,7 @@ android {
                 val version = defaultConfig.versionName
                 
                 // 设置APK文件名格式
-                output.outputFileName = "WebDAVBrowser_${buildType}_v${version}.apk"
+                output.outputFileName = "LazyCleaner.apk"
             }
     }
     
