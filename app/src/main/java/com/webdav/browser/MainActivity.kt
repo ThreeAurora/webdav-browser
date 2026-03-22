@@ -40,6 +40,8 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import kotlinx.coroutines.*
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -177,7 +179,10 @@ fun AppRoot(settings: Settings) {
 // ========== 登录/设置页 ==========
 @Composable
 fun LoginPage(s: Settings, onConnect: () -> Unit) {
-    var url by remember { mutableStateOf(s.serverUrl.ifBlank { "http://" }) }
+    var url by remember {
+        val initial = s.serverUrl.ifBlank { "http://" }
+        mutableStateOf(TextFieldValue(initial, selection = TextRange(initial.length)))
+    }
     var user by remember { mutableStateOf(s.username) }
     var pass by remember { mutableStateOf(s.password) }
     var cd by remember { mutableStateOf(s.confirmDelete) }
@@ -251,7 +256,7 @@ fun LoginPage(s: Settings, onConnect: () -> Unit) {
         Spacer(Modifier.height(24.dp))
         Button(
             onClick = {
-                s.serverUrl = url.trimEnd('/'); s.username = user; s.password = pass
+                s.serverUrl = url.text.trimEnd('/'); s.username = user; s.password = pass
                 s.confirmDelete = cd; s.deleteButtonPos = dp
                 s.pageSize = ps; s.showHidden = sh; s.viewMode = vm
                 onConnect()
@@ -825,17 +830,97 @@ fun VPlayer(
             playWhenReady = true
         }
     }
+
     LaunchedEffect(player) { onPlayerCreated(player) }
     DisposableEffect(url) {
         onDispose { onPlayerReleased(); player.release() }
     }
-    AndroidView(
-        factory = { c -> PlayerView(c).apply { this.player = player; useController = true } },
-        update = { it.player = player },
-        modifier = Modifier.fillMaxSize()
-    )
+
+    // 跟踪播放进度
+    var position by remember { mutableStateOf(0L) }
+    var duration by remember { mutableStateOf(0L) }
+    var isPlaying by remember { mutableStateOf(true) }
+    var isSeeking by remember { mutableStateOf(false) }
+    var seekPos by remember { mutableStateOf(0f) }
+
+    // 每 500ms 刷新进度
+    LaunchedEffect(player) {
+        while (true) {
+            if (!isSeeking) {
+                position = player.currentPosition.coerceAtLeast(0)
+                duration = player.duration.let { if (it < 0) 0 else it }
+                isPlaying = player.playWhenReady && player.playbackState != ExoPlayer.STATE_ENDED
+            }
+            delay(500)
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        // 视频画面（无任何覆盖层）
+        AndroidView(
+            factory = { c ->
+                PlayerView(c).apply {
+                    this.player = player
+                    useController = false  // 不要系统控制层
+                }
+            },
+            update = { it.player = player },
+            modifier = Modifier.fillMaxWidth().weight(1f)
+        )
+
+        // 自定义底部进度条（常驻）
+        Column(
+            Modifier.fillMaxWidth().background(Color(0xFF111111))
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            // 进度条
+            Slider(
+                value = if (isSeeking) seekPos
+                        else if (duration > 0) position.toFloat() / duration.toFloat()
+                        else 0f,
+                onValueChange = { v ->
+                    isSeeking = true
+                    seekPos = v
+                },
+                onValueChangeFinished = {
+                    player.seekTo((seekPos * duration).toLong())
+                    isSeeking = false
+                },
+                modifier = Modifier.fillMaxWidth().height(24.dp),
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFF4fc3f7),
+                    activeTrackColor = Color(0xFF4fc3f7),
+                    inactiveTrackColor = Color(0xFF333333)
+                )
+            )
+
+            // 时间显示
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    fmtTime(if (isSeeking) (seekPos * duration).toLong() else position),
+                    color = Color(0xFFCCCCCC), fontSize = 12.sp
+                )
+                Text(
+                    fmtTime(duration),
+                    color = Color(0xFF888888), fontSize = 12.sp
+                )
+            }
+        }
+    }
 }
 
+/** 格式化时间 ms → HH:MM:SS 或 MM:SS */
+fun fmtTime(ms: Long): String {
+    val totalSec = (ms / 1000).coerceAtLeast(0)
+    val h = totalSec / 3600
+    val m = (totalSec % 3600) / 60
+    val s = totalSec % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s)
+    else "%d:%02d".format(m, s)
+}
 // ========== 回收站 ==========
 @Composable
 fun TrashPage(client: WebDavClient, currentPath: String, onBack: () -> Unit) {
