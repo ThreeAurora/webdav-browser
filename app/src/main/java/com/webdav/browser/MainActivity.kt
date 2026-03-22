@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -13,6 +14,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,7 +26,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -37,8 +40,6 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import kotlinx.coroutines.*
-import kotlin.math.abs
-import androidx.compose.foundation.gestures.awaitFirstDown
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -183,6 +184,7 @@ fun LoginPage(s: Settings, onConnect: () -> Unit) {
     var dp by remember { mutableStateOf(s.deleteButtonPos) }
     var ps by remember { mutableStateOf(s.pageSize) }
     var sh by remember { mutableStateOf(s.showHidden) }
+    var vm by remember { mutableStateOf(s.viewMode) }
 
     Column(
         Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
@@ -204,7 +206,6 @@ fun LoginPage(s: Settings, onConnect: () -> Unit) {
         Text("📄 显示设置", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
         Spacer(Modifier.height(8.dp))
 
-        // 每页数量
         Text("每页显示数量", color = Color.Gray, fontSize = 14.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(20, 50, 100, 200).forEach { n ->
@@ -214,7 +215,15 @@ fun LoginPage(s: Settings, onConnect: () -> Unit) {
         }
         Spacer(Modifier.height(8.dp))
 
-        // 显示隐藏文件
+        Text("默认视图", color = Color.Gray, fontSize = 14.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("grid" to "网格", "list" to "列表", "waterfall" to "瀑布流").forEach { (v, l) ->
+                FilterChip(selected = vm == v, onClick = { vm = v },
+                    label = { Text(l, fontSize = 12.sp) })
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("显示隐藏文件", color = Color.White); Spacer(Modifier.weight(1f))
             Switch(sh, { sh = it })
@@ -244,7 +253,7 @@ fun LoginPage(s: Settings, onConnect: () -> Unit) {
             onClick = {
                 s.serverUrl = url.trimEnd('/'); s.username = user; s.password = pass
                 s.confirmDelete = cd; s.deleteButtonPos = dp
-                s.pageSize = ps; s.showHidden = sh
+                s.pageSize = ps; s.showHidden = sh; s.viewMode = vm
                 onConnect()
             },
             modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -253,7 +262,7 @@ fun LoginPage(s: Settings, onConnect: () -> Unit) {
     }
 }
 
-// ========== 浏览页（分页 + 全文件类型） ==========
+// ========== 浏览页 ==========
 @Composable
 fun BrowserPage(
     allItems: List<DavItem>, allMedia: List<DavItem>,
@@ -263,14 +272,14 @@ fun BrowserPage(
     onSort: (String) -> Unit, onToggle: () -> Unit, onSettings: () -> Unit,
     onTrash: () -> Unit, onPageChange: (Int) -> Unit
 ) {
+    var viewMode by remember { mutableStateOf(settings.viewMode) }
+
     val pageSize = settings.pageSize
     val folders = allItems.filter { it.isDir }
     val files = allItems.filter { !it.isDir }
     val totalFiles = files.size
     val totalPages = ((totalFiles + pageSize - 1) / pageSize).coerceAtLeast(1)
     val curPage = page.coerceIn(0, totalPages - 1)
-
-    // 本页要显示的文件
     val pageFiles = files.drop(curPage * pageSize).take(pageSize)
 
     Column(Modifier.fillMaxSize()) {
@@ -283,6 +292,16 @@ fun BrowserPage(
             Text(path, color = Color.Gray, fontSize = 12.sp, maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp))
+            // 视图切换按钮
+            IBtn(when (viewMode) { "list" -> "☰"; "waterfall" -> "▥"; else -> "▦" }) {
+                viewMode = when (viewMode) {
+                    "grid" -> "list"
+                    "list" -> "waterfall"
+                    else -> "grid"
+                }
+                settings.viewMode = viewMode
+            }
+            Spacer(Modifier.width(4.dp))
             IBtn("♻") { onTrash() }
             Spacer(Modifier.width(4.dp))
             IBtn("⚙") { onSettings() }
@@ -303,33 +322,25 @@ fun BrowserPage(
                 Modifier.height(32.dp))
         }
 
-        // 文件数量统计
+        // 统计
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text("${folders.size}个文件夹  ${files.size}个文件",
                 color = Color(0xFF666666), fontSize = 11.sp)
+            Text(
+                when (viewMode) { "list" -> "列表"; "waterfall" -> "瀑布流"; else -> "网格" },
+                color = Color(0xFF666666), fontSize = 11.sp
+            )
         }
 
-        // 网格内容
-        LazyVerticalGrid(
-            GridCells.Fixed(3), Modifier.weight(1f).padding(horizontal = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            // 只在第一页显示文件夹
-            if (curPage == 0) {
-                folders.forEach { f ->
-                    item(span = { GridItemSpan(3) }) {
-                        FolderRow(f, settings) { onNav(f) }
-                    }
-                }
-            }
-            // 当前页的文件
-            items(pageFiles.size) { i ->
-                val item = pageFiles[i]
-                FileCell(item, settings) { onNav(item) }
+        // 内容区域
+        Box(Modifier.weight(1f)) {
+            when (viewMode) {
+                "list" -> ListView(folders, pageFiles, curPage, settings, onNav)
+                "waterfall" -> WaterfallView(folders, pageFiles, curPage, settings, onNav)
+                else -> GridView(folders, pageFiles, curPage, settings, onNav)
             }
         }
 
@@ -354,29 +365,184 @@ fun BrowserPage(
     }
 }
 
+// ========== 网格视图（原版） ==========
 @Composable
-fun FolderRow(item: DavItem, settings: Settings, onClick: () -> Unit) {
-    val alpha = if (item.isHidden) 0.45f else 1f
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFF222222)).clickable { onClick() }
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
+fun GridView(
+    folders: List<DavItem>, files: List<DavItem>,
+    curPage: Int, settings: Settings, onNav: (DavItem) -> Unit
+) {
+    LazyVerticalGrid(
+        GridCells.Fixed(3), Modifier.fillMaxSize().padding(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Text("📁", fontSize = 20.sp, modifier = Modifier.graphicsLayer(alpha = alpha))
-        Spacer(Modifier.width(10.dp))
-        Text(item.name, color = Color.White.copy(alpha = alpha), fontSize = 15.sp,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (curPage == 0) {
+            folders.forEach { f ->
+                item(span = { GridItemSpan(3) }) { FolderRow(f, settings) { onNav(f) } }
+            }
+        }
+        items(files.size) { i -> FileGridCell(files[i], settings) { onNav(files[i]) } }
+    }
+}
+
+// ========== 列表视图（详细信息） ==========
+@Composable
+fun ListView(
+    folders: List<DavItem>, files: List<DavItem>,
+    curPage: Int, settings: Settings, onNav: (DavItem) -> Unit
+) {
+    LazyColumn(
+        Modifier.fillMaxSize().padding(6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        if (curPage == 0) {
+            items(folders.size) { i -> FolderListRow(folders[i], settings) { onNav(folders[i]) } }
+        }
+        items(files.size) { i -> FileListRow(files[i], settings) { onNav(files[i]) } }
     }
 }
 
 @Composable
-fun FileCell(item: DavItem, settings: Settings, onClick: () -> Unit) {
+fun FolderListRow(item: DavItem, settings: Settings, onClick: () -> Unit) {
+    val alpha = if (item.isHidden) 0.45f else 1f
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFF222222)).clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("📁", fontSize = 22.sp, modifier = Modifier.graphicsLayer(alpha = alpha))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(item.name, color = Color.White.copy(alpha = alpha), fontSize = 14.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("文件夹", color = Color(0xFF666666), fontSize = 11.sp)
+        }
+        if (item.date.isNotEmpty()) {
+            Text(item.date.take(16), color = Color(0xFF555555), fontSize = 10.sp)
+        }
+    }
+}
+
+@Composable
+fun FileListRow(item: DavItem, settings: Settings, onClick: () -> Unit) {
+    val alpha = if (item.isHidden) 0.4f else 1f
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFF1E1E1E)).clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 缩略图或图标
+        if (item.isImage) {
+            AsyncImage(
+                model = settings.serverUrl.trimEnd('/') + "/" + item.href.trimStart('/'),
+                contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier.size(44.dp).clip(RoundedCornerShape(4.dp))
+                    .graphicsLayer(alpha = alpha)
+            )
+        } else {
+            Box(
+                Modifier.size(44.dp).clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xFF2A2A2A)).graphicsLayer(alpha = alpha),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(item.fileIcon, fontSize = 22.sp)
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+
+        // 文件信息
+        Column(Modifier.weight(1f)) {
+            Text(item.name, color = Color.White.copy(alpha = alpha), fontSize = 13.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(".${item.ext}", color = Color(0xFF4fc3f7), fontSize = 11.sp)
+                if (item.size > 0) {
+                    Text(fmtSize(item.size), color = Color(0xFF888888), fontSize = 11.sp)
+                }
+            }
+        }
+
+        // 日期
+        if (item.date.isNotEmpty()) {
+            Text(item.date.take(16), color = Color(0xFF555555), fontSize = 10.sp,
+                maxLines = 1, modifier = Modifier.widthIn(max = 120.dp))
+        }
+    }
+}
+
+// ========== 瀑布流视图 ==========
+@Composable
+fun WaterfallView(
+    folders: List<DavItem>, files: List<DavItem>,
+    curPage: Int, settings: Settings, onNav: (DavItem) -> Unit
+) {
+    LazyVerticalStaggeredGrid(
+        columns = StaggeredGridCells.Fixed(2),
+        modifier = Modifier.fillMaxSize().padding(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalItemSpacing = 6.dp
+    ) {
+        if (curPage == 0) {
+            folders.forEach { f ->
+                item(span = StaggeredGridItemSpan.FullLine) {
+                    FolderRow(f, settings) { onNav(f) }
+                }
+            }
+        }
+        items(files.size) { i -> WaterfallCell(files[i], settings) { onNav(files[i]) } }
+    }
+}
+
+@Composable
+fun WaterfallCell(item: DavItem, settings: Settings, onClick: () -> Unit) {
+    val alpha = if (item.isHidden) 0.4f else 1f
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF222222)).clickable { onClick() }
+            .graphicsLayer(alpha = alpha)
+    ) {
+        if (item.isImage) {
+            // 图片按原始比例显示（产生瀑布流效果的关键）
+            AsyncImage(
+                model = settings.serverUrl.trimEnd('/') + "/" + item.href.trimStart('/'),
+                contentDescription = null,
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier.fillMaxWidth()
+                    .heightIn(min = 80.dp, max = 400.dp)  // 限制极端比例
+            )
+        } else {
+            // 非图片文件
+            Box(
+                Modifier.fillMaxWidth().height(100.dp)
+                    .background(Color(0xFF2A2A2A)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(item.fileIcon, fontSize = 36.sp)
+            }
+        }
+        // 底部信息
+        Column(Modifier.padding(6.dp)) {
+            Text(item.name, color = Color.White, fontSize = 11.sp,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (item.size > 0) {
+                    Text(fmtSize(item.size), color = Color(0xFF888888), fontSize = 10.sp)
+                }
+                Text(".${item.ext}", color = Color(0xFF4fc3f7), fontSize = 10.sp)
+            }
+        }
+    }
+}
+
+// ========== 通用网格格子 ==========
+@Composable
+fun FileGridCell(item: DavItem, settings: Settings, onClick: () -> Unit) {
     val alpha = if (item.isHidden) 0.4f else 1f
     Box(
         Modifier.aspectRatio(1f).clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFF222222))
-            .clickable { onClick() }
+            .background(Color(0xFF222222)).clickable { onClick() }
             .graphicsLayer(alpha = alpha)
     ) {
         if (item.isImage) {
@@ -386,23 +552,35 @@ fun FileCell(item: DavItem, settings: Settings, onClick: () -> Unit) {
                 modifier = Modifier.fillMaxSize()
             )
         } else {
-            // 非图片文件用图标
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(item.fileIcon, fontSize = 30.sp)
             }
         }
-        // 文件大小
         if (item.size > 0) {
             Text(fmtSize(item.size), fontSize = 9.sp, color = Color.White,
                 modifier = Modifier.align(Alignment.TopStart)
                     .background(Color(0xBB000000), RoundedCornerShape(0.dp, 0.dp, 4.dp, 0.dp))
                     .padding(3.dp))
         }
-        // 文件名
         Text(item.name, fontSize = 9.sp, color = Color.White,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                 .background(Color(0xAA000000)).padding(3.dp))
+    }
+}
+
+@Composable
+fun FolderRow(item: DavItem, settings: Settings, onClick: () -> Unit) {
+    val alpha = if (item.isHidden) 0.45f else 1f
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF222222)).clickable { onClick() }.padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("📁", fontSize = 20.sp, modifier = Modifier.graphicsLayer(alpha = alpha))
+        Spacer(Modifier.width(10.dp))
+        Text(item.name, color = Color.White.copy(alpha = alpha), fontSize = 15.sp,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -434,12 +612,9 @@ fun ViewerPage(
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // 缩放状态（仅图片）
     var scale by remember { mutableStateOf(1f) }
     var offsetX by remember { mutableStateOf(0f) }
     var offsetY by remember { mutableStateOf(0f) }
-
-    // 视频播放器引用
     var playerRef by remember { mutableStateOf<ExoPlayer?>(null) }
 
     LaunchedEffect(idx) { scale = 1f; offsetX = 0f; offsetY = 0f }
@@ -482,8 +657,7 @@ fun ViewerPage(
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-
-        // ===== 内容 =====
+        // 内容
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             if (cur.isImage) {
                 AsyncImage(
@@ -513,77 +687,74 @@ fun ViewerPage(
                 )
             } else if (cur.isVideo) {
                 VPlayer(
-                    url = client.fileUrl(cur.href),
-                    client = client,
+                    url = client.fileUrl(cur.href), client = client,
                     onPlayerCreated = { playerRef = it },
                     onPlayerReleased = { playerRef = null }
                 )
             }
         }
 
-        // ===== 手势层 =====
+        // 手势层（视频时底部留空给进度条）
         Box(
             Modifier.fillMaxWidth()
                 .then(if (cur.isVideo) Modifier.fillMaxHeight(0.85f) else Modifier.fillMaxHeight())
                 .pointerInput(idx, cur.isVideo, scale) {
-                // 自定义手势识别：区分点击和滑动
-                awaitPointerEventScope {
-                    while (true) {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val startX = down.position.x
-                        val startY = down.position.y
-                        val startTime = System.currentTimeMillis()
-                        var endX = startX
-                        var endY = startY
-                        var moved = false
-
-                        // 跟踪手指移动
+                    awaitPointerEventScope {
                         while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: break
-                            endX = change.position.x
-                            endY = change.position.y
-                            if (kotlin.math.abs(endX - startX) > 20 || kotlin.math.abs(endY - startY) > 20) moved = true
-                            if (!change.pressed) break
-                        }
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val startX = down.position.x
+                            val startY = down.position.y
+                            val startTime = System.currentTimeMillis()
+                            var endX = startX
+                            var endY = startY
+                            var moved = false
 
-                        val dx = endX - startX
-                        val dy = endY - startY
-                        val dt = System.currentTimeMillis() - startTime
-                        val adx = kotlin.math.abs(dx)
-                        val ady = kotlin.math.abs(dy)
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull() ?: break
+                                endX = change.position.x
+                                endY = change.position.y
+                                if (kotlin.math.abs(endX - startX) > 20 ||
+                                    kotlin.math.abs(endY - startY) > 20) moved = true
+                                if (!change.pressed) break
+                            }
 
-                        // 上下滑动 → 切换文件（图片和视频通用）
-                        if (ady > 80 && ady > adx * 1.5f) {
-                            if (dy > 0) nav(-1) else nav(1)  // 下滑=上一个, 上滑=下一个
-                        }
-                        // 点击（没有明显移动 且 时间短）
-                        else if (!moved && dt < 300) {
-                            val w = size.width
-                            if (cur.isVideo) {
-                                // 视频：左点=快退5s, 右点=快进5s, 中间=暂停/播放
-                                val p = playerRef
-                                if (p != null) {
-                                    if (startX < w * 0.35f) {
-                                        p.seekTo((p.currentPosition - 5000).coerceAtLeast(0))
-                                    } else if (startX > w * 0.65f) {
-                                        p.seekTo((p.currentPosition + 5000).coerceAtMost(p.duration))
-                                    } else {
-                                        p.playWhenReady = !p.playWhenReady
+                            val dx = endX - startX
+                            val dy = endY - startY
+                            val dt = System.currentTimeMillis() - startTime
+                            val adx = kotlin.math.abs(dx)
+                            val ady = kotlin.math.abs(dy)
+
+                            // 上下滑动 → 切换（图片视频通用）
+                            if (ady > 80 && ady > adx * 1.5f) {
+                                if (dy > 0) nav(-1) else nav(1)
+                            }
+                            // 点击
+                            else if (!moved && dt < 300) {
+                                val w = size.width
+                                if (cur.isVideo) {
+                                    val p = playerRef
+                                    if (p != null) {
+                                        when {
+                                            startX < w * 0.35f ->
+                                                p.seekTo((p.currentPosition - 5000).coerceAtLeast(0))
+                                            startX > w * 0.65f ->
+                                                p.seekTo((p.currentPosition + 5000).coerceAtMost(p.duration))
+                                            else ->
+                                                p.playWhenReady = !p.playWhenReady
+                                        }
                                     }
+                                } else if (scale <= 1.05f) {
+                                    if (startX < w * 0.4f) nav(-1)
+                                    else if (startX > w * 0.6f) nav(1)
                                 }
-                            } else if (scale <= 1.05f) {
-                                // 图片（未缩放）：左点=上一个, 右点=下一个
-                                if (startX < w * 0.4f) nav(-1)
-                                else if (startX > w * 0.6f) nav(1)
                             }
                         }
                     }
                 }
-            }
         )
 
-        // ===== 顶部信息 =====
+        // 顶部信息
         Row(
             Modifier.align(Alignment.TopCenter).fillMaxWidth()
                 .background(Color(0x99000000)).padding(8.dp),
@@ -594,13 +765,13 @@ fun ViewerPage(
                 color = Color.White, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
 
-        // ===== 返回 =====
+        // 返回
         Text("✕", color = Color.White, fontSize = 18.sp,
             modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
                 .clip(RoundedCornerShape(8.dp)).background(Color(0xAA333333))
                 .clickable { onBack() }.padding(horizontal = 14.dp, vertical = 8.dp))
 
-        // ===== 缩放提示 =====
+        // 缩放提示
         if (scale > 1.05f) {
             Text("${(scale * 100).toInt()}%  双击复原",
                 color = Color(0xAAFFFFFF), fontSize = 11.sp,
@@ -609,7 +780,7 @@ fun ViewerPage(
                     .padding(horizontal = 10.dp, vertical = 4.dp))
         }
 
-        // ===== 删除按钮 =====
+        // 删除按钮
         val al = when (settings.deleteButtonPos) {
             "top-left" -> Alignment.TopStart; "top-right" -> Alignment.TopEnd
             "bottom-left" -> Alignment.BottomStart; else -> Alignment.BottomEnd
@@ -626,17 +797,17 @@ fun ViewerPage(
                 .clickable { if (settings.confirmDelete) showDlg = true else doDelete() }
                 .padding(horizontal = 20.dp, vertical = 12.dp))
 
-        // ===== 底部操作提示 =====
+        // 底部提示
         if (scale <= 1.05f) {
             val hint = if (cur.isVideo) "左右点按快进退 · 上下滑动切换"
-                       else "左右点按切换 · 上下滑动切换"
+            else "左右点按切换 · 上下滑动切换"
             Text(hint, color = Color(0x66FFFFFF), fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp))
         }
     }
 }
 
-// ========== 视频播放器（无覆盖层） ==========
+// ========== 视频播放器 ==========
 @Composable
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 fun VPlayer(
@@ -645,7 +816,6 @@ fun VPlayer(
     onPlayerReleased: () -> Unit
 ) {
     val ctx = LocalContext.current
-
     val player = remember(url) {
         ExoPlayer.Builder(ctx).setMediaSourceFactory(
             DefaultMediaSourceFactory(OkHttpDataSource.Factory(client.getClient()))
@@ -655,31 +825,18 @@ fun VPlayer(
             playWhenReady = true
         }
     }
-
     LaunchedEffect(player) { onPlayerCreated(player) }
-
     DisposableEffect(url) {
-        onDispose {
-            onPlayerReleased()
-            player.release()
-        }
+        onDispose { onPlayerReleased(); player.release() }
     }
-
     AndroidView(
-        factory = { c ->
-            PlayerView(c).apply {
-                this.player = player
-                useController = true
-            }
-        },
-        update = { view ->
-            view.player = player
-        },
+        factory = { c -> PlayerView(c).apply { this.player = player; useController = true } },
+        update = { it.player = player },
         modifier = Modifier.fillMaxSize()
     )
 }
 
-// ========== 回收站页面 ==========
+// ========== 回收站 ==========
 @Composable
 fun TrashPage(client: WebDavClient, currentPath: String, onBack: () -> Unit) {
     var trashItems by remember { mutableStateOf<List<TrashEntry>>(emptyList()) }
