@@ -438,14 +438,10 @@ fun ViewerPage(
     var offsetX by remember { mutableStateOf(0f) }
     var offsetY by remember { mutableStateOf(0f) }
 
-    // 快进快退提示
-    var seekHint by remember { mutableStateOf("") }
-    var seekJob by remember { mutableStateOf<Job?>(null) }
-
     // 视频播放器引用
     var playerRef by remember { mutableStateOf<ExoPlayer?>(null) }
 
-    LaunchedEffect(idx) { scale = 1f; offsetX = 0f; offsetY = 0f; seekHint = "" }
+    LaunchedEffect(idx) { scale = 1f; offsetX = 0f; offsetY = 0f }
 
     if (local.isEmpty()) { LaunchedEffect(Unit) { onBack() }; return }
     val cur = local[idx.coerceIn(0, local.size - 1)]
@@ -470,15 +466,6 @@ fun ViewerPage(
 
     fun nav(d: Int) {
         if (local.isNotEmpty()) idx = (idx + d + local.size) % local.size
-    }
-
-    fun showSeekHint(text: String) {
-        seekHint = text
-        seekJob?.cancel()
-        seekJob = scope.launch {
-            delay(600)
-            seekHint = ""
-        }
     }
 
     if (showDlg) {
@@ -576,13 +563,10 @@ fun ViewerPage(
                                 if (p != null) {
                                     if (startX < w * 0.35f) {
                                         p.seekTo((p.currentPosition - 5000).coerceAtLeast(0))
-                                        showSeekHint("◀ -5s")
                                     } else if (startX > w * 0.65f) {
                                         p.seekTo((p.currentPosition + 5000).coerceAtMost(p.duration))
-                                        showSeekHint("+5s ▶")
                                     } else {
                                         p.playWhenReady = !p.playWhenReady
-                                        showSeekHint(if (p.playWhenReady) "▶" else "⏸")
                                     }
                                 }
                             } else if (scale <= 1.05f) {
@@ -595,14 +579,6 @@ fun ViewerPage(
                 }
             }
         )
-
-        // ===== 快进快退提示 =====
-        if (seekHint.isNotEmpty()) {
-            Text(seekHint, color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Center)
-                    .background(Color(0x88000000), RoundedCornerShape(16.dp))
-                    .padding(horizontal = 24.dp, vertical = 12.dp))
-        }
 
         // ===== 顶部信息 =====
         Row(
@@ -648,7 +624,7 @@ fun ViewerPage(
                 .padding(horizontal = 20.dp, vertical = 12.dp))
 
         // ===== 底部操作提示 =====
-        if (scale <= 1.05f && seekHint.isEmpty()) {
+        if (scale <= 1.05f) {
             val hint = if (cur.isVideo) "左右点按快进退 · 上下滑动切换"
                        else "左右点按切换 · 上下滑动切换"
             Text(hint, color = Color(0x66FFFFFF), fontSize = 10.sp,
