@@ -25,5 +25,11 @@ class Settings(context: Context) {
     var sortAsc: Boolean
         get() = sp.getBoolean("sa", true)
         set(v) = sp.edit().putBoolean("sa", v).apply()
+    var pageSize: Int
+        get() = sp.getInt("ps", 50)
+        set(v) = sp.edit().putInt("ps", v).apply()
+    var showHidden: Boolean
+        get() = sp.getBoolean("sh", false)
+        set(v) = sp.edit().putBoolean("sh", v).apply()
     fun isConfigured() = serverUrl.isNotBlank()
 }
