@@ -798,7 +798,7 @@ fun ViewerPage(
         }
         Text("🗑️ 删除", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold,
             modifier = Modifier.align(al).then(pd).clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFFDD2222))
+                .background(Color(0x99DD2222))
                 .clickable { if (settings.confirmDelete) showDlg = true else doDelete() }
                 .padding(horizontal = 20.dp, vertical = 12.dp))
 
@@ -871,7 +871,7 @@ fun VPlayer(
         // 自定义底部进度条（常驻）
         Column(
             Modifier.fillMaxWidth().background(Color(0xFF111111))
-                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .padding(start = 12.dp, end = 100.dp, top = 4.dp, bottom = 4.dp)
         ) {
             // 进度条
             Slider(
