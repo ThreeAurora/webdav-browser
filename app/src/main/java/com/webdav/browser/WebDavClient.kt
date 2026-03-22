@@ -17,21 +17,27 @@ data class DavItem(
     val ext get() = name.substringAfterLast('.', "").lowercase()
     val isImage get() = ext in setOf("jpg","jpeg","png","gif","bmp","webp","svg","avif","jxl","tiff","ico")
     val isVideo get() = ext in setOf("mp4","mkv","avi","mov","webm","m4v","ts","flv","3gp","wmv")
+    val isAudio get() = ext in setOf("mp3","flac","wav","aac","ogg","m4a","wma","opus")
     val isMedia get() = isImage || isVideo
+    val isHidden get() = name.startsWith(".")
+    val isTrash get() = name.startsWith(".webdav_trash")
+    val fileIcon get() = when {
+        isDir -> "📁"; isImage -> "🖼️"; isVideo -> "🎬"; isAudio -> "🎵"
+        ext in setOf("pdf") -> "📕"
+        ext in setOf("doc","docx","odt","rtf") -> "📝"
+        ext in setOf("xls","xlsx","csv") -> "📊"
+        ext in setOf("ppt","pptx") -> "📙"
+        ext in setOf("zip","rar","7z","tar","gz","bz2") -> "📦"
+        ext in setOf("apk") -> "📲"
+        ext in setOf("txt","log","md","json","xml","yml","yaml","ini","cfg","conf") -> "📃"
+        ext in setOf("exe","msi","bat","sh") -> "⚙️"
+        else -> "📄"
+    }
 }
 
-/**
- * 回收站条目
- * id 和 fileName 从回收站文件名 "{id}_{fileName}" 解析得到
- * originalPath 只在需要时（还原）才从 .trashinfo 文件读取（懒加载）
- */
 data class TrashEntry(
-    val id: String,
-    val fileName: String,
-    val trashHref: String,       // 回收站中数据文件的完整路径
-    val size: Long = 0,
-    val date: String = "",
-    val originalPath: String = "" // 懒加载，列出时可能为空
+    val id: String, val fileName: String, val trashHref: String,
+    val size: Long = 0, val date: String = ""
 ) {
     val ext get() = fileName.substringAfterLast('.', "").lowercase()
     val isImage get() = ext in setOf("jpg","jpeg","png","gif","bmp","webp","svg","avif","jxl","tiff","ico")
@@ -50,15 +56,12 @@ class WebDavClient(private val baseUrl: String, user: String, pass: String) {
             }
         }.build()
 
-    // ===== 基础 WebDAV 操作 =====
-
     fun listDir(path: String): List<DavItem> {
         val url = buildUrl(path)
-        val body = propfindBody()
-        val req = Request.Builder().url(url).method("PROPFIND", body)
+        val req = Request.Builder().url(url).method("PROPFIND", propfindBody())
             .header("Depth", "1").build()
         val xml = client.newCall(req).execute().body?.string() ?: return emptyList()
-        return parsePropfind(xml, path).filter { !it.name.startsWith(".webdav_trash") }
+        return parsePropfind(xml, path)
     }
 
     fun permanentDelete(path: String): Boolean {
@@ -70,8 +73,7 @@ class WebDavClient(private val baseUrl: String, user: String, pass: String) {
         val req = Request.Builder().url(buildUrl(fromPath))
             .method("MOVE", null)
             .header("Destination", buildEncodedUrl(toPath))
-            .header("Overwrite", "F")
-            .build()
+            .header("Overwrite", "F").build()
         return client.newCall(req).execute().isSuccessful
     }
 
@@ -85,10 +87,7 @@ class WebDavClient(private val baseUrl: String, user: String, pass: String) {
     fun mkdirs(path: String) {
         val parts = path.trim('/').split('/').filter { it.isNotBlank() }
         var cur = ""
-        for (part in parts) {
-            cur += "/$part"
-            mkdir("$cur/")
-        }
+        for (part in parts) { cur += "/$part"; mkdir("$cur/") }
     }
 
     fun putText(path: String, content: String): Boolean {
@@ -112,41 +111,25 @@ class WebDavClient(private val baseUrl: String, user: String, pass: String) {
     fun fileUrl(path: String) = buildUrl(path)
     fun getClient() = client
 
-    // ===== 回收站路径计算 =====
+    // ===== 回收站 =====
 
     private fun getDriveRoot(path: String): String {
         val parts = path.trim('/').split('/').filter { it.isNotBlank() }
         return if (parts.isNotEmpty()) "/${parts[0]}" else ""
     }
 
-    private fun trashDir(filePath: String): String {
-        return "${getDriveRoot(filePath)}/.webdav_trash"
-    }
-
-    // ===== 移到回收站（O(1)，不读不写 JSON） =====
+    private fun trashDir(filePath: String) = "${getDriveRoot(filePath)}/.webdav_trash"
 
     fun moveToTrash(filePath: String): Boolean {
-        val dir = trashDir(filePath)
-        mkdir("$dir/")
-
+        val dir = trashDir(filePath); mkdir("$dir/")
         val fileName = filePath.trimEnd('/').substringAfterLast('/')
         val id = UUID.randomUUID().toString().replace("-", "").substring(0, 8)
-        val storedName = "${id}_${fileName}"
-        val trashFilePath = "$dir/$storedName"
-        val infoPath = "$trashFilePath.trashinfo"
-
-        // 1. 先写 trashinfo（只有一行：原始路径）
-        if (!putText(infoPath, filePath)) return false
-
-        // 2. 移动文件
+        val trashFilePath = "$dir/${id}_${fileName}"
+        if (!putText("$trashFilePath.trashinfo", filePath)) return false
         val success = move(filePath, trashFilePath)
-        if (!success) {
-            permanentDelete(infoPath) // 移动失败则清理
-        }
+        if (!success) permanentDelete("$trashFilePath.trashinfo")
         return success
     }
-
-    // ===== 列出回收站（O(1)，一次 PROPFIND） =====
 
     fun listTrash(currentPath: String): List<TrashEntry> {
         val dir = trashDir(currentPath)
@@ -156,55 +139,24 @@ class WebDavClient(private val baseUrl: String, user: String, pass: String) {
         val resp = try { client.newCall(req).execute() } catch (_: Exception) { return emptyList() }
         if (!resp.isSuccessful) return emptyList()
         val xml = resp.body?.string() ?: return emptyList()
-
-        val allItems = parsePropfind(xml, "$dir/")
-
-        // 只保留数据文件（排除 .trashinfo 和文件夹）
-        val dataFiles = allItems.filter { !it.name.endsWith(".trashinfo") && !it.isDir }
-
-        return dataFiles.mapNotNull { item ->
-            // 文件名格式: {8位id}_{原始文件名}
-            val underscoreIdx = item.name.indexOf('_')
-            if (underscoreIdx < 1) return@mapNotNull null
-
-            val id = item.name.substring(0, underscoreIdx)
-            val fileName = item.name.substring(underscoreIdx + 1)
-            if (fileName.isBlank()) return@mapNotNull null
-
-            TrashEntry(
-                id = id,
-                fileName = fileName,
-                trashHref = item.href,
-                size = item.size,
-                date = item.date
-                // originalPath 暂不加载，等用户点还原时再读
-            )
-        }
+        return parsePropfind(xml, "$dir/")
+            .filter { !it.name.endsWith(".trashinfo") && !it.isDir }
+            .mapNotNull { item ->
+                val idx = item.name.indexOf('_')
+                if (idx < 1) return@mapNotNull null
+                val id = item.name.substring(0, idx)
+                val fn = item.name.substring(idx + 1)
+                if (fn.isBlank()) return@mapNotNull null
+                TrashEntry(id, fn, item.href, item.size, item.date)
+            }
     }
-
-    // ===== 读取原始路径（只在还原时调用） =====
-
-    private fun readOriginalPath(entry: TrashEntry): String? {
-        val infoPath = "${entry.trashHref}.trashinfo"
-        return getText(infoPath)?.trim()
-    }
-
-    // ===== 从回收站还原（O(1)） =====
 
     fun restoreFromTrash(entry: TrashEntry): Pair<Boolean, String> {
-        // 1. 读取原始路径
-        val originalPath = readOriginalPath(entry)
-            ?: return Pair(false, "找不到原始路径信息（.trashinfo 丢失）")
-
+        val originalPath = getText("${entry.trashHref}.trashinfo")?.trim()
+            ?: return Pair(false, "找不到原始路径信息")
         if (originalPath.isBlank()) return Pair(false, "原始路径为空")
-
-        // 2. 确保原始目录存在
         val parentDir = originalPath.substringBeforeLast('/')
-        if (parentDir.isNotBlank() && parentDir != originalPath) {
-            mkdirs(parentDir)
-        }
-
-        // 3. 处理重名
+        if (parentDir.isNotBlank() && parentDir != originalPath) mkdirs(parentDir)
         var targetPath = originalPath
         if (exists(targetPath)) {
             val dirPart = originalPath.substringBeforeLast('/')
@@ -212,67 +164,47 @@ class WebDavClient(private val baseUrl: String, user: String, pass: String) {
             val dotIdx = fullName.lastIndexOf('.')
             val baseName = if (dotIdx > 0) fullName.substring(0, dotIdx) else fullName
             val ext = if (dotIdx > 0) fullName.substring(dotIdx) else ""
-            var counter = 1
+            var c = 1
             while (exists(targetPath)) {
-                targetPath = "$dirPart/${baseName}_${counter}${ext}"
-                counter++
-                if (counter > 9999) return Pair(false, "重名文件过多")
+                targetPath = "$dirPart/${baseName}_${c}${ext}"; c++
+                if (c > 9999) return Pair(false, "重名文件过多")
             }
         }
-
-        // 4. 移回原位
         val success = move(entry.trashHref, targetPath)
         if (!success) return Pair(false, "移动失败")
-
-        // 5. 删除 .trashinfo
         permanentDelete("${entry.trashHref}.trashinfo")
-
-        val renamed = if (targetPath != originalPath) {
-            "（已重命名为 ${targetPath.substringAfterLast('/')}）"
-        } else ""
-        return Pair(true, "已还原到 ${parentDir}/ $renamed")
+        val renamed = if (targetPath != originalPath) "（已重命名为 ${targetPath.substringAfterLast('/')}）" else ""
+        return Pair(true, "已还原 $renamed")
     }
-
-    // ===== 永久删除回收站单个文件（O(1)） =====
 
     fun permanentDeleteTrashEntry(entry: TrashEntry): Boolean {
         val a = permanentDelete(entry.trashHref)
-        val b = permanentDelete("${entry.trashHref}.trashinfo")
+        permanentDelete("${entry.trashHref}.trashinfo")
         return a
     }
 
-    // ===== 清空回收站 =====
-
     fun emptyTrash(currentPath: String): Boolean {
-        val dir = trashDir(currentPath)
-        return permanentDelete("$dir/")
+        return permanentDelete("${trashDir(currentPath)}/")
     }
 
-    // ===== URL 构建 =====
+    // ===== 内部 =====
 
-    private fun buildUrl(path: String): String {
-        return baseUrl.trimEnd('/') + "/" + path.trimStart('/')
-    }
-
+    private fun buildUrl(path: String) = baseUrl.trimEnd('/') + "/" + path.trimStart('/')
     private fun buildEncodedUrl(path: String): String {
-        val segments = path.trimStart('/').split('/').map { seg ->
-            URLEncoder.encode(seg, "UTF-8").replace("+", "%20")
+        val segments = path.trimStart('/').split('/').map {
+            URLEncoder.encode(it, "UTF-8").replace("+", "%20")
         }
         return baseUrl.trimEnd('/') + "/" + segments.joinToString("/")
     }
-
     private fun propfindBody() = """<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:prop>
         <D:getcontentlength/><D:getlastmodified/><D:resourcetype/>
         </D:prop></D:propfind>""".toRequestBody("application/xml".toMediaType())
-
-    // ===== XML 解析 =====
 
     private fun parsePropfind(xml: String, curPath: String): List<DavItem> {
         val items = mutableListOf<DavItem>()
         val factory = XmlPullParserFactory.newInstance()
         factory.isNamespaceAware = true
-        val p = factory.newPullParser()
-        p.setInput(StringReader(xml))
+        val p = factory.newPullParser(); p.setInput(StringReader(xml))
         var href = ""; var sz = 0L; var dt = ""; var isCol = false; var inR = false; var tag = ""
         while (p.eventType != XmlPullParser.END_DOCUMENT) {
             when (p.eventType) {
