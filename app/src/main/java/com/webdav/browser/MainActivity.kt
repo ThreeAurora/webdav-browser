@@ -149,7 +149,7 @@ fun AppRoot(settings: Settings) {
 
         Screen.VIEWER -> {
             BackHandler { screen = Screen.BROWSER; load(curPath) }
-            ViewerPage(media, viewIdx, client!!, settings,
+            ViewerPage(media, viewIdx, client!!, settings, curPath,
                 onBack = { screen = Screen.BROWSER; load(curPath) },
                 onDel = { d ->
                     items = items.filter { it.href != d.href }
@@ -160,11 +160,7 @@ fun AppRoot(settings: Settings) {
 
         Screen.TRASH -> {
             BackHandler { screen = Screen.BROWSER }
-            TrashPage(
-                client = client!!,
-                currentPath = curPath,
-                onBack = { screen = Screen.BROWSER; load(curPath) }
-            )
+            TrashPage(client!!, curPath) { screen = Screen.BROWSER; load(curPath) }
         }
     }
 }
@@ -233,7 +229,6 @@ fun BrowserPage(
     onTrash: () -> Unit, settings: Settings
 ) {
     Column(Modifier.fillMaxSize()) {
-        // 顶栏：加了回收站按钮
         Row(
             Modifier.fillMaxWidth().background(Color(0xFF222222)).padding(8.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -246,7 +241,6 @@ fun BrowserPage(
             Spacer(Modifier.width(4.dp))
             IBtn("⚙") { onSettings() }
         }
-        // 排序栏
         Row(
             Modifier.fillMaxWidth().background(Color(0xFF1A1A1A))
                 .padding(horizontal = 6.dp, vertical = 4.dp),
@@ -266,8 +260,7 @@ fun BrowserPage(
         val mediaList = items.filter { it.isMedia }
 
         LazyVerticalGrid(
-            GridCells.Fixed(3),
-            Modifier.fillMaxSize().padding(6.dp),
+            GridCells.Fixed(3), Modifier.fillMaxSize().padding(6.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -325,11 +318,11 @@ fun IBtn(t: String, onClick: () -> Unit) {
             .padding(horizontal = 12.dp, vertical = 6.dp))
 }
 
-// ========== 全屏浏览页（移到回收站而非永久删除） ==========
+// ========== 全屏浏览页 ==========
 @Composable
 fun ViewerPage(
     items: List<DavItem>, startIdx: Int, client: WebDavClient, settings: Settings,
-    onBack: () -> Unit, onDel: (DavItem) -> Unit
+    currentPath: String, onBack: () -> Unit, onDel: (DavItem) -> Unit
 ) {
     var idx by remember { mutableStateOf(startIdx.coerceIn(0, (items.size - 1).coerceAtLeast(0))) }
     var local by remember { mutableStateOf(items.toList()) }
@@ -345,7 +338,6 @@ fun ViewerPage(
     if (local.isEmpty()) { LaunchedEffect(Unit) { onBack() }; return }
     val cur = local[idx.coerceIn(0, local.size - 1)]
 
-    // ★ 改为移到回收站
     fun doDelete() {
         val toDelete = cur
         scope.launch(Dispatchers.IO) {
@@ -448,7 +440,6 @@ fun ViewerPage(
                     .padding(horizontal = 10.dp, vertical = 4.dp))
         }
 
-        // 删除按钮（现在是移到回收站）
         val al = when (settings.deleteButtonPos) {
             "top-left" -> Alignment.TopStart; "top-right" -> Alignment.TopEnd
             "bottom-left" -> Alignment.BottomStart; else -> Alignment.BottomEnd
@@ -472,16 +463,15 @@ fun ViewerPage(
     }
 }
 
-// ========== ♻ 回收站页面 ==========
+// ========== 回收站页面 ==========
 @Composable
 fun TrashPage(client: WebDavClient, currentPath: String, onBack: () -> Unit) {
-    var trashItems by remember { mutableStateOf<List<TrashItem>>(emptyList()) }
+    var trashItems by remember { mutableStateOf<List<TrashEntry>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var showEmptyDlg by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // 加载回收站列表
     fun loadTrash() {
         loading = true
         scope.launch(Dispatchers.IO) {
@@ -492,7 +482,6 @@ fun TrashPage(client: WebDavClient, currentPath: String, onBack: () -> Unit) {
 
     LaunchedEffect(Unit) { loadTrash() }
 
-    // 清空回收站确认
     if (showEmptyDlg) {
         AlertDialog(
             onDismissRequest = { showEmptyDlg = false },
@@ -515,7 +504,6 @@ fun TrashPage(client: WebDavClient, currentPath: String, onBack: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        // 顶栏
         Row(
             Modifier.fillMaxWidth().background(Color(0xFF222222)).padding(8.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -524,10 +512,8 @@ fun TrashPage(client: WebDavClient, currentPath: String, onBack: () -> Unit) {
             Spacer(Modifier.width(8.dp))
             Text("♻ 回收站", color = Color.White, fontSize = 18.sp,
                 fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            // 刷新按钮
             IBtn("🔄") { loadTrash() }
             Spacer(Modifier.width(4.dp))
-            // 清空按钮
             if (trashItems.isNotEmpty()) {
                 Text("清空", color = Color.White, fontSize = 14.sp,
                     modifier = Modifier.clip(RoundedCornerShape(6.dp))
@@ -549,23 +535,17 @@ fun TrashPage(client: WebDavClient, currentPath: String, onBack: () -> Unit) {
                 }
             }
         } else {
-            // 顶部统计
-            Text("  共 ${trashItems.size} 个文件",
-                color = Color.Gray, fontSize = 12.sp,
+            Text("  共 ${trashItems.size} 个文件", color = Color.Gray, fontSize = 12.sp,
                 modifier = Modifier.padding(8.dp))
 
             LazyColumn(
                 Modifier.fillMaxSize().padding(horizontal = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                itemsIndexed(trashItems) { index, item ->
-                    TrashItemRow(item, client, ctx, scope,
-                        onRestored = {
-                            trashItems = trashItems.filter { it.trashHref != item.trashHref }
-                        },
-                        onPermanentDeleted = {
-                            trashItems = trashItems.filter { it.trashHref != item.trashHref }
-                        }
+                itemsIndexed(trashItems) { _, entry ->
+                    TrashEntryRow(entry, client, currentPath, ctx, scope,
+                        onRestored = { trashItems = trashItems.filter { it.id != entry.id } },
+                        onDeleted = { trashItems = trashItems.filter { it.id != entry.id } }
                     )
                 }
             }
@@ -574,11 +554,11 @@ fun TrashPage(client: WebDavClient, currentPath: String, onBack: () -> Unit) {
 }
 
 @Composable
-fun TrashItemRow(
-    item: TrashItem, client: WebDavClient, ctx: android.content.Context,
-    scope: CoroutineScope, onRestored: () -> Unit, onPermanentDeleted: () -> Unit
+fun TrashEntryRow(
+    entry: TrashEntry, client: WebDavClient, currentPath: String,
+    ctx: android.content.Context, scope: CoroutineScope,
+    onRestored: () -> Unit, onDeleted: () -> Unit
 ) {
-    var showMenu by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
 
     Row(
@@ -586,35 +566,41 @@ fun TrashItemRow(
             .background(Color(0xFF222222)).padding(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 图标
         Text(
-            if (item.isImage) "🖼️" else if (item.isVideo) "🎬" else "📄",
-            fontSize = 28.sp
+            when {
+                entry.isImage -> "🖼️"
+                entry.isVideo -> "🎬"
+                else -> "📄"
+            }, fontSize = 28.sp
         )
         Spacer(Modifier.width(10.dp))
 
-        // 文件信息
         Column(Modifier.weight(1f)) {
-            Text(item.name, color = Color.White, fontSize = 14.sp,
+            Text(entry.fileName, color = Color.White, fontSize = 14.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("原：${item.originalPath}", color = Color(0xFF888888), fontSize = 10.sp,
+            Text("来自：${entry.originalPath}", color = Color(0xFF888888), fontSize = 10.sp,
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (item.size > 0) {
-                Text(fmtSize(item.size), color = Color(0xFF666666), fontSize = 10.sp)
+            Row {
+                if (entry.deletedAt.isNotBlank()) {
+                    Text("删除于 ${entry.deletedAt}", color = Color(0xFF666666), fontSize = 10.sp)
+                }
+                if (entry.size > 0) {
+                    Text("  ${fmtSize(entry.size)}", color = Color(0xFF666666), fontSize = 10.sp)
+                }
             }
         }
 
         if (busy) {
             Text("处理中...", color = Color.Yellow, fontSize = 12.sp)
         } else {
-            // 还原按钮
+            // 还原
             Text("还原", color = Color.White, fontSize = 13.sp,
                 modifier = Modifier.clip(RoundedCornerShape(6.dp))
                     .background(Color(0xFF2266CC))
                     .clickable {
                         busy = true
                         scope.launch(Dispatchers.IO) {
-                            val (ok, msg) = client.restoreFromTrash(item.trashHref)
+                            val (ok, msg) = client.restoreFromTrash(entry, currentPath)
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
                                 busy = false
@@ -623,22 +609,19 @@ fun TrashItemRow(
                         }
                     }
                     .padding(horizontal = 12.dp, vertical = 6.dp))
-
             Spacer(Modifier.width(6.dp))
-
-            // 永久删除按钮
+            // 永久删除
             Text("彻删", color = Color.White, fontSize = 13.sp,
                 modifier = Modifier.clip(RoundedCornerShape(6.dp))
                     .background(Color(0xFF993333))
                     .clickable {
                         busy = true
                         scope.launch(Dispatchers.IO) {
-                            client.permanentDelete(item.trashHref)
-                            client.permanentDelete("${item.trashHref}.trashinfo")
+                            client.permanentDeleteTrashEntry(entry, currentPath)
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(ctx, "已永久删除", Toast.LENGTH_SHORT).show()
                                 busy = false
-                                onPermanentDeleted()
+                                onDeleted()
                             }
                         }
                     }
@@ -647,7 +630,6 @@ fun TrashItemRow(
     }
 }
 
-// ========== 视频播放器 ==========
 @Composable
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 fun VPlayer(url: String, client: WebDavClient) {
