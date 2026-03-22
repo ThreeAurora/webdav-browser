@@ -619,9 +619,9 @@ fun ViewerPage(
 
     var scale by remember { mutableStateOf(1f) }
     var offsetX by remember { mutableStateOf(0f) }
-    var lastTapTime by remember { mutableStateOf(0L) }
     var offsetY by remember { mutableStateOf(0f) }
     var playerRef by remember { mutableStateOf<ExoPlayer?>(null) }
+    var lastTapTime by remember { mutableStateOf(0L) }
 
     LaunchedEffect(idx) { scale = 1f; offsetX = 0f; offsetY = 0f }
 
