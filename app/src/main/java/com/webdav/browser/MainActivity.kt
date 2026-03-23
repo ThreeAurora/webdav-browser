@@ -895,7 +895,11 @@ fun VPlayer(url: String, client: WebDavClient, onC: (ExoPlayer) -> Unit, onR: ()
     LaunchedEffect(p) { onC(p); while (true) { if (!sk) { pos=p.currentPosition.coerceAtLeast(0); dur=p.duration.let{if(it<0)0 else it} }; delay(500) } }
     DisposableEffect(url) { onDispose { onR(); p.release() } }
     Column(Modifier.fillMaxSize()) {
-        AndroidView({ PlayerView(it).apply { player=p; useController=false } }, { it.player=p }, Modifier.fillMaxWidth().weight(1f))
+        AndroidView(
+            factory = { PlayerView(it).apply { player=p; useController=false } },
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            update = { it.player=p }
+        )
         Column(Modifier.fillMaxWidth().background(Color(0xFF111111)).padding(start=10.dp,end=90.dp,top=2.dp,bottom=3.dp)) {
             Slider(if(sk)sv else if(dur>0)pos.toFloat()/dur.toFloat() else 0f, { sk=true;sv=it }, Modifier.fillMaxWidth().height(18.dp),
                 onValueChangeFinished = { p.seekTo((sv*dur).toLong());sk=false },
