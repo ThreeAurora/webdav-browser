@@ -47,8 +47,9 @@ data class TrashEntry(
 
 class WebDavClient(private val baseUrl: String, user: String, pass: String) {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .apply {
             if (user.isNotBlank()) authenticator { _, resp ->
                 resp.request.newBuilder()
@@ -75,6 +76,12 @@ class WebDavClient(private val baseUrl: String, user: String, pass: String) {
             .header("Destination", buildEncodedUrl(toPath))
             .header("Overwrite", "F").build()
         return client.newCall(req).execute().isSuccessful
+    }
+
+    fun davRename(path: String, newName: String): Boolean {
+        val parentPath = path.trimEnd('/').substringBeforeLast('/')
+        val newPath = "$parentPath/$newName"
+        return move(path, newPath)
     }
 
     fun mkdir(path: String): Boolean {
@@ -108,16 +115,27 @@ class WebDavClient(private val baseUrl: String, user: String, pass: String) {
         } catch (_: Exception) { false }
     }
 
+    /** 下载文件为字节数组 */
+    fun downloadBytes(path: String): ByteArray? {
+        val resp = client.newCall(Request.Builder().url(buildEncodedUrl(path)).get().build()).execute()
+        return if (resp.isSuccessful) resp.body?.bytes() else null
+    }
+
+    /** 上传字节数组 */
+    fun uploadBytes(path: String, data: ByteArray, contentType: String = "application/octet-stream"): Boolean {
+        val body = data.toRequestBody(contentType.toMediaType())
+        return client.newCall(Request.Builder().url(buildEncodedUrl(path)).put(body).build())
+            .execute().isSuccessful
+    }
+
     fun fileUrl(path: String) = buildEncodedUrl(path)
     fun getClient() = client
 
     // ===== 回收站 =====
-
     private fun getDriveRoot(path: String): String {
         val parts = path.trim('/').split('/').filter { it.isNotBlank() }
         return if (parts.isNotEmpty()) "/${parts[0]}" else ""
     }
-
     private fun trashDir(filePath: String) = "${getDriveRoot(filePath)}/.webdav_trash"
 
     fun moveToTrash(filePath: String): Boolean {
@@ -165,10 +183,7 @@ class WebDavClient(private val baseUrl: String, user: String, pass: String) {
             val baseName = if (dotIdx > 0) fullName.substring(0, dotIdx) else fullName
             val ext = if (dotIdx > 0) fullName.substring(dotIdx) else ""
             var c = 1
-            while (exists(targetPath)) {
-                targetPath = "$dirPart/${baseName}_${c}${ext}"; c++
-                if (c > 9999) return Pair(false, "重名文件过多")
-            }
+            while (exists(targetPath)) { targetPath = "$dirPart/${baseName}_${c}${ext}"; c++ }
         }
         val success = move(entry.trashHref, targetPath)
         if (!success) return Pair(false, "移动失败")
@@ -186,8 +201,6 @@ class WebDavClient(private val baseUrl: String, user: String, pass: String) {
     fun emptyTrash(currentPath: String): Boolean {
         return permanentDelete("${trashDir(currentPath)}/")
     }
-
-    // ===== 内部 =====
 
     private fun buildUrl(path: String) = baseUrl.trimEnd('/') + "/" + path.trimStart('/')
     private fun buildEncodedUrl(path: String): String {
